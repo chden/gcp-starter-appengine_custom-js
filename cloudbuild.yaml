@@ -1,0 +1,97 @@
+steps:
+- name: 'gcr.io/cloud-builders/npm'
+  id: 'install'
+  args: ['install']
+
+- name: 'gcr.io/cloud-builders/npm'
+  id: 'lint'
+  waitFor:
+  - 'install'
+  args: ['run', 'lint']
+
+- name: 'gcr.io/cloud-builders/npm'
+  id: 'test'
+  waitFor:
+  - 'install'
+  args: ['run','test']
+
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'build'
+  waitFor:
+  - 'test'
+  - 'lint'
+  args: [ 'build', '-t', 'gcr.io/$PROJECT_ID/${_APP_NAME}-${_APP_SERVICE}:${_APP_VERSION}', '.' ]
+
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'push'
+  waitFor:
+  - 'build'
+  args: [ 'push', 'gcr.io/$PROJECT_ID/${_APP_NAME}-${_APP_SERVICE}:${_APP_VERSION}' ]
+
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: 'deploy'
+  waitFor:
+  - 'push'
+  entrypoint: /bin/bash
+  args:
+    - -c
+    - |
+      gcloud app deploy app.yaml \
+        --image-url "gcr.io/${PROJECT_ID}/${_APP_NAME}-${_APP_SERVICE}:${_APP_VERSION}" \
+        --no-promote \
+        --version $(echo "${_APP_VERSION}" | sed s/[^a-z0-9-]/-/g)
+
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: 'get-env'
+  waitFor:
+    - 'deploy'
+  entrypoint: /bin/bash
+  args:
+    - -c
+    - |
+      export build_version=$(echo ${_APP_VERSION} | sed s/[^a-z0-9-]/-/g) &&
+      export build_url="$(gcloud app versions list --uri --filter "service:${_APP_SERVICE} version.id=${build_version}")" &&
+      env | grep '^build_' &&
+      # write vars to a file
+      env | grep '^build_' > /workspace/build_vars
+
+- name: 'gcr.io/cloud-builders/npm'
+  id: 'system-test'
+  waitFor:
+    - 'get-env'
+  entrypoint: /bin/bash
+  args:
+    - -c
+    - |
+      # read variables from file
+      . /workspace/build_vars &&
+
+      base_url="$build_url" npm run test:system
+
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: 'promote'
+  waitFor:
+    - 'system-test'
+  entrypoint: /bin/bash
+  args:
+    - -c
+    - |
+      # read variables from file
+      . /workspace/build_vars &&
+
+      gcloud app services set-traffic ${_APP_SERVICE} --splits "${build_version}=1"
+
+
+# Uncomment the following step if you want to stop all versions that receive no traffic.
+# But be aware that the step before ('promote') sets all traffic to the currently deployed version.
+
+# - name: 'gcr.io/cloud-builders/gcloud'
+#   id: 'stop-versions-notraffic'
+#   waitFor:
+#     - 'promote'
+#   entrypoint: /bin/bash
+#   args:
+#     - -c
+#     - |
+#       gcloud app versions stop \
+#       $(gcloud app versions list --service ${_APP_SERVICE} --filter "TRAFFIC_SPLIT<=0 AND NOT SERVING_STATUS=STOPPED" --format "get(VERSION.ID)")

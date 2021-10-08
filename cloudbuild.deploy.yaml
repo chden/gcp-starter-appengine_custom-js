@@ -1,0 +1,10 @@
+steps:
+- name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: /bin/bash
+  args:
+    - -c
+    - |
+      gcloud app deploy app.yaml \
+        --image-url "gcr.io/${PROJECT_ID}/${_APP_NAME}-${_APP_SERVICE}:${_APP_VERSION}" \
+        ${_NO_PROMOTE} \
+        --version $(echo "${_APP_VERSION}" | sed s/[^a-z0-9-]/-/g)
